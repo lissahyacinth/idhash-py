@@ -1,11 +1,15 @@
 # IDHash
 
-Efficiently create an identifiable hash for a dataset that is independent of row ordering but dependent of column ordering. The core purpose of IDHash is to identify quickly if two datasets are the same without requiring them to both be on the same machine, but also expands to being able to check if one dataset is a modified version of the other dataset if the modification is known upfront.
+Efficiently create an identifiable hash for a dataset that is;
+* Independent of row ordering
+* Dependent of column ordering
+
+Quickly identify if two datasets are identical by comparing their hashes, without needing to presort the values.
 
 IDHash is based upon UNFv6, and details around UNF can be found [here](https://guides.dataverse.org/en/latest/developers/unf/index.html), where the major differences are that UNF is column-invariant but row-dependent, and IDHash is column-dependent and row-invariant.
 
 
-## Examples
+## Example - Hash Entire Dataset
 ```python
 import pandas as pd
 import pyarrow as pa
@@ -21,38 +25,46 @@ print(hash_pd(x))
 > 259167810065665855969772359546814925541
 ```
 
-## Method Drawbacks
+## Example - Hash Iteratively
+```python
+import pandas as pd
+import pyarrow as pa
+from idhash import id_hash, IDHasher
+from typing import List
 
-### Duplicate Identification
-Due to the requirement for row-invariance, a dataset of
-```
-    A    B
-    1    2
-    1    2
-    1    2
-```
-will produce the same hash as;
-```
-    A    B
-    1    2
-```
-But not the same as;
-```
-    A    B
-    1    2
-    1    2
+def create_hasher(columns: List[str], dtypes: pd.Series) -> IDHasher:
+    dtypes = [str(dtypes[x]) for x in columns]
+    return IDHasher(field_names=columns, field_types=dtypes)
+
+x=pd.DataFrame.from_dict({'a': [1,2,3]})
+hasher = create_hasher(x.columns, x.dtypes)
+batches = pa.Table.from_pandas(x).to_batches(max_chunksize=1)
+for batch in batches:
+    hasher.write_batches([batch], delta="Add")
+print(hasher.finalize())
+> 259167810065665855969772359546814925541
 ```
 
-In practice, this is relatively unlikely, and for the core purpose of datasets within Machine Learning, it is not a primary issue.
+Iterative hashing has an additional benefit - it's possible to verify a delta between two datasets, i.e.
+
+```python
+dataset_a: pd.DataFrame, dataset_b: pd.DataFrame, delta: List[pa.RecordBatch] = load_data()
+hasher_a = create_hasher(dataset_a.columns, dataset_a.dtypes)
+hasher_a.write_batches(pa.Table.from_pandas(dataset_a), delta="Add")
+hasher_b = create_hasher(dataset_b.columns, dataset_b.dtypes)
+hasher_b.write_batches(pa.Table.from_pandas(dataset_b), delta="Add")
+
+assert hasher_a.write_batches(delta, delta="Add").finalize() == hasher_b.finalize()
+```
 
 ## Preprocessing
-Each column has specific pre-processing according to the UNF definition. This mostly consists of ensuring that floating point values and timestamps (currently unsupported in IDHash) are representable consistently across datasets when taking into account floating point epsilon. 
+Each column has specific pre-processing according to the UNF definition. This mostly consists of ensuring that floating point values, datetimes, and timestamps are representable consistently across datasets when taking into account floating point epsilon. 
 
 ## Hash Generation
-Each row is taken as a single bytestream, and hashed using Murmurhash128. Murmurhash is a non-cryptographically secure hash function that produces a well distributed hash for each individual value. By XORing the individual hashed primitives, a final hash can be produced for the final dataset that does not take into account duplicates.  
+Each row is taken as a single bytestream, and hashed using Murmurhash128. Murmurhash is a non-cryptographically secure hash function that produces a well distributed hash for each individual value. By adding (wrapping around f64::max) the individual hashed primitives, a final hash can be produced for the final dataset that does not take into account duplicates.  
 
 ## Checking for Equality + Delta
-As the hashed rows are XORed against each other to produce the final value, it is also possible to remove rows against the final hash by producing a row hash in the same manner as was originally performed. 
+As the hashed rows are added to each other to produce the final value, it is also possible to remove rows against the final hash by producing a row hash in the same manner as was originally performed. 
 
 ## Data Processing
 IDHash operates over Apache Arrow RecordBatches and can process with zero-copy over the batches.
