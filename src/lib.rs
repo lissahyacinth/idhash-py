@@ -1,8 +1,8 @@
 use std::{error::Error, sync::Arc};
 
 use arrow::{
-    array::{make_array_from_raw, ArrayRef},
-    datatypes::{DataType, Field, Schema},
+    array::ArrayRef,
+    datatypes::{DataType, Field, Schema, TimeUnit},
     ffi,
     record_batch::RecordBatch,
 };
@@ -10,9 +10,53 @@ use idhash::{calculate_idhash, config::IdHashConfigBuilder};
 use pyo3::{ffi::Py_uintptr_t, prelude::*};
 
 #[pyclass]
-struct UnfHash {
-    #[pyo3(get, set)]
-    short_hash: u128,
+struct IDHasher {
+    hash: u128,
+    schema: Arc<Schema>,
+    field_names: Vec<String>,
+}
+
+#[pymethods]
+impl IDHasher {
+    #[new]
+    fn new(field_names: Vec<String>, field_types: Vec<String>) -> Self {
+        IDHasher {
+            hash: 0,
+            schema: get_schema(field_names.clone(), field_types),
+            field_names,
+        }
+    }
+
+    /// Write an entire Arrow Table as Batches to Hasher
+    fn write_batches(&mut self, batches: Vec<&PyAny>, delta: String) {
+        let config = IdHashConfigBuilder::new().build();
+        let hash: u128 = calculate_idhash(
+            from_py_record_batches(&batches, self.schema.clone(), self.field_names.len()),
+            self.schema.clone(),
+            config,
+        );
+        match delta.as_ref() {
+            "Add" => *self += hash,
+            "Remove" => *self -= hash,
+            _ => unimplemented!(),
+        }
+    }
+
+    fn finalize(&self) -> u128 {
+        self.hash
+    }
+}
+
+impl std::ops::AddAssign<u128> for IDHasher {
+    fn add_assign(&mut self, other: u128) {
+        self.hash = self.hash.wrapping_add(other);
+    }
+}
+
+impl std::ops::SubAssign<u128> for IDHasher {
+    fn sub_assign(&mut self, other: u128) {
+        self.hash = self.hash.wrapping_sub(other);
+    }
 }
 
 /// Convert Python Record Batch to a Rust Record Batch
@@ -22,19 +66,21 @@ struct UnfHash {
 /// Method partially adopted from (https://github.com/pola-rs/polars/blob/629f5012bcefaa3c9a9c1a236e64dc057e8d472c/py-polars/src/arrow_interop/to_rust.rs#L32-L66)
 /// with alterations to use Arrow-rs instead of Arrow2, as there is minimal concern WRT transmutation.
 pub fn array_to_rust(obj: &PyAny) -> Result<ArrayRef, Box<dyn Error>> {
-    let array = Box::new(ffi::FFI_ArrowArray::empty());
-    let schema = Box::new(ffi::FFI_ArrowSchema::empty());
+    let array = Box::new(ffi::Ffi_ArrowArray::empty());
+    let schema = Box::new(ffi::Ffi_ArrowSchema::empty());
 
-    let array_ptr = &*array as *const ffi::FFI_ArrowArray;
-    let schema_ptr = &*schema as *const ffi::FFI_ArrowSchema;
+    let array_ptr = &*array as *const ffi::Ffi_ArrowArray;
+    let schema_ptr = &*schema as *const ffi::Ffi_ArrowSchema;
 
     obj.call_method1(
         "_export_to_c",
         (array_ptr as Py_uintptr_t, schema_ptr as Py_uintptr_t),
     )?;
-
-    let array = unsafe { make_array_from_raw(array_ptr, schema_ptr).unwrap() };
-    Ok(array.into())
+    unsafe {
+        let field = ffi::import_field_from_c(schema.as_ref())?;
+        let array = ffi::import_array_from_c(array, &field)?;
+        Ok(array.into())
+    }
 }
 
 fn convert_to_data_type(data_type: &String) -> DataType {
@@ -47,7 +93,9 @@ fn convert_to_data_type(data_type: &String) -> DataType {
         "float64" => DataType::Float64,
         "string" => DataType::Utf8,
         "bool" => DataType::Boolean,
-        _ => unreachable!(),
+        "datetime64[ns]" => DataType::Timestamp(TimeUnit::Nanosecond, Some("".to_string())),
+        "object" => DataType::Utf8,
+        _ => panic!("Unknown Data Type {}", data_type),
     }
 }
 
@@ -109,5 +157,6 @@ pub fn id_hash(
 #[pymodule]
 fn idhash(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(id_hash, m)?)?;
+    m.add_class::<IDHasher>()?;
     Ok(())
 }

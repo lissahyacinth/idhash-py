@@ -1,6 +1,6 @@
 [package]
-name = "idhash"
-version = "0.1.3"
+name = "idhashrs"
+version = "0.2.0"
 edition = "2018"
 license = "GPL-2.0-or-later"
 authors = [
@@ -20,8 +20,8 @@ name = "idhash"
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow = { version = "5.3", default-features = true }
-idhash = "0.1.0"
+arrow = { package = "arrow2", version = "0.8.0", default-features = false, features = ["csv", "io_csv_read"] }
+idhash = { version = "0.2.0" }
 
 [dependencies.pyo3]
 version = "0.14.5"
