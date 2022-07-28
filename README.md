@@ -16,8 +16,8 @@ import pyarrow as pa
 from idhash import id_hash
 
 def hash_pd(df: pd.DataFrame) -> int:
-    dtypes = [str(df.dtypes[x]) for x in df.columns]
-    df_batches = pa.Table.from_pandas(x).to_batches()
+    dtypes = [str(df.dtypes[col]) for col in df.columns]
+    df_batches = pa.Table.from_pandas(df).to_batches()
     return id_hash(df_batches, df.columns, dtypes)
 
 x=pd.DataFrame.from_dict({'a': [1,2,3]})
@@ -33,12 +33,12 @@ from idhash import id_hash, IDHasher
 from typing import List
 
 def create_hasher(columns: List[str], dtypes: pd.Series) -> IDHasher:
-    dtypes = [str(dtypes[x]) for x in columns]
+    dtypes = [str(dtypes[col]) for col in columns]
     return IDHasher(field_names=columns, field_types=dtypes)
 
-x=pd.DataFrame.from_dict({'a': [1,2,3]})
-hasher = create_hasher(x.columns, x.dtypes)
-batches = pa.Table.from_pandas(x).to_batches(max_chunksize=1)
+df = pd.DataFrame.from_dict({'a': [1,2,3]})
+hasher = create_hasher(df.columns, df.dtypes)
+batches = pa.Table.from_pandas(df).to_batches(max_chunksize=1)
 for batch in batches:
     hasher.write_batches([batch], delta="Add")
 print(hasher.finalize())
